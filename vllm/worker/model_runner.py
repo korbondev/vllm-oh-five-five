@@ -2,6 +2,7 @@ import dataclasses
 import gc
 import inspect
 import itertools
+from math import floor
 import time
 import warnings
 import weakref
@@ -14,6 +15,7 @@ import torch
 import torch.distributed
 import torch.nn as nn
 
+from vllm.entrypoints.openai.protocol import VerifyChatCompletion
 import vllm.envs as envs
 from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.attention.backends.abstract import AttentionState
@@ -875,6 +877,35 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         self.sampling_metadata_cache: SamplingMetadataCache = \
             SamplingMetadataCache()
 
+    def get_powv(
+        self,
+        input: VerifyChatCompletion,
+    ) -> int:
+        """
+        Calculates Proof of Work value that can be used to verify the outputs
+        of a model were made with the model claimed.
+        """
+        powv = 0
+        input_sum = sum(input.input_tokens)
+        output_sum = sum(input.response_tokens)
+        token_sum = input_sum + output_sum
+        param_index = token_sum % self.model_num_params
+        for k, param in enumerate(self.model.parameters()):
+            if k != param_index:
+                continue
+            if param.dim() == 1:
+                weights = param.tolist()
+            else:
+                tensor_index = output_sum % param.size()[0]
+                weights = param[tensor_index].tolist()
+            if len(weights) == 0:
+                param_index += 1
+                continue
+            weight_index = input_sum % len(weights)
+            powv = floor(weights[weight_index] * token_sum)
+            break
+        return powv
+
     def load_model(self) -> None:
         logger.info("Starting to load model %s...", self.model_config.model)
         with CudaMemoryProfiler() as m:
@@ -1451,11 +1482,30 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         if not self.is_driver_worker:
             return []
 
+        if model_input.async_callback is not None:
+            model_input.async_callback()
+
         # Sample the next token.
         output: SamplerOutput = self.model.sample(
             logits=logits,
             sampling_metadata=model_input.sampling_metadata,
         )
+
+        if(model_input.input_positions is not None and model_input.sampling_metadata is not None):
+            for i, o in enumerate(output.outputs):
+                seq_id = model_input.sampling_metadata.seq_groups[i].seq_ids[0]
+                input_tokens = (
+                    model_input.sampling_metadata.seq_groups[i]
+                    .seq_data[seq_id]
+                    .get_prompt_token_ids()
+                )
+                output_tokens = (
+                    model_input.sampling_metadata.seq_groups[i]
+                    .seq_data[seq_id]
+                    .get_output_token_ids()
+                )
+                verifyChatCompletion = VerifyChatCompletion(input_tokens=input_tokens, response_tokens=output_tokens, model=self.model_config.model)
+                o.powv = self.get_powv(verifyChatCompletion)
         if (self.observability_config is not None
                 and self.observability_config.collect_model_forward_time
                 and output is not None):

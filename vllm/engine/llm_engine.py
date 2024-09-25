@@ -7,6 +7,7 @@ from typing import Set, Tuple, Type, Union
 
 from typing_extensions import TypeVar, assert_never
 
+from vllm.entrypoints.openai.protocol import VerifyChatCompletion
 import vllm.envs as envs
 from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
                          EngineConfig, LoadConfig, LoRAConfig, ModelConfig,
@@ -973,6 +974,11 @@ class LLMEngine:
 
         return self.input_processor(model_inputs)
 
+    def verify_chat_completion(
+            self,
+            inputs: VerifyChatCompletion):
+        return self.model_executor.verify_output(inputs)
+
     def add_request(
         self,
         request_id: str,
@@ -1228,6 +1234,7 @@ class LLMEngine:
                 continue
 
             self.output_processor.process_prompt_logprob(seq_group, outputs)
+            seq_group.powv = output[0].powv
             if seq_group_meta.do_sample:
                 self.output_processor.process_outputs(seq_group, outputs)
 
@@ -1240,6 +1247,7 @@ class LLMEngine:
                                     EmbeddingRequestOutput]] = []
         for scheduled_seq_group in scheduled_seq_groups:
             seq_group = scheduled_seq_group.seq_group
+            seq_group.powv = seq_group.powv if not len(output) else output[0].powv
             seq_group.maybe_set_first_token_time(now)
             request_output = RequestOutputFactory.create(seq_group)
             request_outputs.append(request_output)

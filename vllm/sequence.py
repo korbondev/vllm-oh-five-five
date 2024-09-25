@@ -598,6 +598,7 @@ class SequenceGroup:
         encoder_seq: Optional[Sequence] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+        powv: Optional[int] = None
     ) -> None:
         self.request_id = request_id
         self.seqs = seqs
@@ -618,6 +619,7 @@ class SequenceGroup:
         self.prompt_adapter_request = prompt_adapter_request
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
+        self.powv = powv
 
     @property
     def prompt(self) -> Optional[str]:
@@ -999,6 +1001,7 @@ class CompletionSequenceGroupOutput(
     samples: List[SequenceOutput]
     # Prompt logprob for each prompt query token.
     prompt_logprobs: Optional[PromptLogprobs]
+    powv: Optional[int] = None
 
     def __repr__(self) -> str:
         return (f"CompletionSequenceGroupOutput(samples={self.samples}, "
@@ -1102,6 +1105,8 @@ class SamplerOutput(
     # Time taken in the model execute function. This will include model forward,
     # block/sync across workers, cpu-gpu sync time and sampling time.
     model_execute_time: Optional[float] = None
+
+    powv: Optional[int] = None
 
     def __getitem__(self, idx: int):
         return self.outputs[idx]
