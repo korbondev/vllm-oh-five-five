@@ -6,7 +6,8 @@ from vllm.executor.executor_base import ExecutorAsyncBase
 from vllm.executor.gpu_executor import GPUExecutor
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
-from vllm.sequence import ExecuteModelRequest, SamplerOutput
+from vllm.model_executor.layers.sampler import SamplerOutput
+from vllm.sequence import ExecuteModelRequest
 
 logger = init_logger(__name__)
 
@@ -64,8 +65,27 @@ class DistributedGPUExecutor(GPUExecutor):
                           num_cpu_blocks=num_cpu_blocks)
 
     def execute_model(
-            self,
-            execute_model_req: ExecuteModelRequest) -> List[SamplerOutput]:
+
+    def execute_model(self, model_input, kv_caches, intermediate_tensors, num_steps=1):
+        # Run the model on all GPUs in parallel
+        sharded_outputs = self._run_model_parallel_on_gpus(model_input, kv_caches, intermediate_tensors, num_steps)
+
+        # Aggregate results from all GPUs (e.g., powv, token_id)
+        logging.debug("Executing model across GPUs with tensor parallelism.")
+        if get_pp_group().is_last_rank:
+            logging.debug("Aggregating results from all GPUs.")
+            return self._aggregate_parallel_results(sharded_outputs)
+        return sharded_outputs
+
+    def _aggregate_parallel_results(self, sharded_outputs):
+        # Function to gather results (like powv and token_id) from all GPUs
+        logging.debug("Aggregating PoWV and token_id from all tensor-parallel GPUs.")
+        aggregated_outputs = torch.cat([gpu_output for gpu_output in sharded_outputs], dim=0)
+        logging.debug(f"Aggregated output: {aggregated_outputs}")
+        return aggregated_outputs
+                    self,
+        execute_model_req: ExecuteModelRequest,
+    ) -> List[SamplerOutput]:
         if self.parallel_worker_tasks is None:
             self.parallel_worker_tasks = self._run_workers(
                 "start_worker_execution_loop",
@@ -164,7 +184,25 @@ class DistributedGPUExecutor(GPUExecutor):
 class DistributedGPUExecutorAsync(DistributedGPUExecutor, ExecutorAsyncBase):
 
     async def execute_model_async(
-            self,
+
+    def execute_model(self, model_input, kv_caches, intermediate_tensors, num_steps=1):
+        # Run the model on all GPUs in parallel
+        sharded_outputs = self._run_model_parallel_on_gpus(model_input, kv_caches, intermediate_tensors, num_steps)
+
+        # Aggregate results from all GPUs (e.g., powv, token_id)
+        logging.debug("Executing model across GPUs with tensor parallelism.")
+        if get_pp_group().is_last_rank:
+            logging.debug("Aggregating results from all GPUs.")
+            return self._aggregate_parallel_results(sharded_outputs)
+        return sharded_outputs
+
+    def _aggregate_parallel_results(self, sharded_outputs):
+        # Function to gather results (like powv and token_id) from all GPUs
+        logging.debug("Aggregating PoWV and token_id from all tensor-parallel GPUs.")
+        aggregated_outputs = torch.cat([gpu_output for gpu_output in sharded_outputs], dim=0)
+        logging.debug(f"Aggregated output: {aggregated_outputs}")
+        return aggregated_outputs
+                        self,
             execute_model_req: ExecuteModelRequest) -> List[SamplerOutput]:
         if self.parallel_worker_tasks is None:
             # Start model execution loop running in the parallel workers
@@ -188,7 +226,7 @@ class DistributedGPUExecutorAsync(DistributedGPUExecutor, ExecutorAsyncBase):
     @abstractmethod
     async def _driver_execute_model_async(
         self,
-        execute_model_req: Optional[ExecuteModelRequest] = None
+        execute_model_req: Optional[ExecuteModelRequest] = None,
     ) -> List[SamplerOutput]:
         """Execute the model asynchronously in the driver worker.
 
